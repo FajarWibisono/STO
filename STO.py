@@ -10,7 +10,7 @@ from io import BytesIO
 import docx
 
 # Initialize Groq client
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+client = Groq(api_key=st.secrets.groq.api_key)
 
 # Load Indonesian embeddings model
 tokenizer = AutoTokenizer.from_pretrained("indolem/indobert-base-uncased")
