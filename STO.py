@@ -1,4 +1,4 @@
-﻿import streamlit as st
+import streamlit as st
 import pandas as pd
 import numpy as np
 import os
@@ -9,18 +9,35 @@ from sklearn.metrics.pairwise import cosine_similarity
 from io import BytesIO
 import docx
 
-# Initialize Groq client
-os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
+# Inisialisasi Groq client dengan konfigurasi yang benar
+client = Groq(api_key=st.secrets.groq.api_key)
 
-# Load Indonesian embeddings model
-tokenizer = AutoTokenizer.from_pretrained("indolem/indobert-base-uncased")
-model = AutoModel.from_pretrained("indolem/indobert-base-uncased")
+# Load model IndoBERT dengan error handling
+try:
+    tokenizer = AutoTokenizer.from_pretrained(
+        "indolem/indobert-base-uncased",
+        force_download=True
+    )
+    model = AutoModel.from_pretrained(
+        "indolem/indobert-base-uncased",
+        force_download=True
+    )
+except Exception as e:
+    st.error(f"Gagal memuat model: {str(e)}")
+    st.stop()
 
 # Context documents storage
 context_documents = []
 
 def generate_embeddings(texts):
-    inputs = tokenizer(texts, return_tensors='pt', padding=True, truncation=True)
+    # Tambahkan parameter max_length dan truncation
+    inputs = tokenizer(
+        texts,
+        return_tensors='pt',
+        padding=True,
+        truncation=True,
+        max_length=512
+    )
     outputs = model(**inputs)
     return outputs.last_hidden_state.mean(dim=1).detach().numpy()
 
@@ -70,9 +87,12 @@ def find_similar_contexts(input_text, top_n=3):
 st.title('Classifier Program Budaya/Kegiatan/Deliverables')
 st.write('Klasifikasi Program Budaya/Kegiatan/Deliverables menjadi STRATEGIS, TAKTIKAL, atau OPERASIONAL')
 
-# Sidebar for context data upload
+# Sidebar untuk upload data context
 st.sidebar.header('Upload Data Context')
-context_file = st.sidebar.file_uploader("Upload file Excel/CSV/DOCX untuk context", type=['xlsx', 'csv', 'docx'])
+context_file = st.sidebar.file_uploader(
+    "Upload file Excel/CSV/DOCX untuk context",
+    type=['xlsx', 'csv', 'docx']
+)
 
 if context_file is not None:
     try:
@@ -92,7 +112,8 @@ tab1, tab2 = st.tabs(["Upload File", "Input Manual"])
 def classify_text(text):
     similar_contexts = find_similar_contexts(text)
     context_str = "\n".join(
-        [f"Contoh: \"{doc['text']}\" -> {doc['label']}" for doc in similar_contexts if doc['label']]
+        [f"Contoh: \"{doc['text']}\" -> {doc['label']}" 
+         for doc in similar_contexts if doc['label']]
     )
     
     prompt = f"""
@@ -109,19 +130,25 @@ def classify_text(text):
     response = client.chat.completions.create(
         model="llama-3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=1024
+        max_tokens=10
     )
     
     return response.choices[0].message.content.strip().split(':')[-1].strip()
 
 with tab1:
-    pred_file = st.file_uploader("Upload file Excel untuk klasifikasi", type=['xlsx'])
+    pred_file = st.file_uploader(
+        "Upload file Excel untuk klasifikasi",
+        type=['xlsx']
+    )
     
     if pred_file is not None:
         try:
             pred_df = pd.read_excel(pred_file)
             st.success("File berhasil diupload!")
-            pred_column = st.selectbox('Pilih kolom teks yang akan diklasifikasi:', pred_df.columns)
+            pred_column = st.selectbox(
+                'Pilih kolom teks yang akan diklasifikasi:',
+                pred_df.columns
+            )
             
             if st.button('Klasifikasi File'):
                 with st.spinner('Mengklasifikasi data...'):
@@ -146,7 +173,9 @@ with tab1:
             st.error(f"Error: {str(e)}")
 
 with tab2:
-    input_text = st.text_area("Tuliskan Program Budaya/Kegiatan/Deliverables Anda di bawah ini:")
+    input_text = st.text_area(
+        "Tuliskan Program Budaya/Kegiatan/Deliverables Anda di bawah ini:"
+    )
     
     if st.button('Klasifikasi Teks'):
         if not input_text:
