@@ -10,11 +10,7 @@ from io import BytesIO
 import docx
 
 # Inisialisasi Groq client dengan konfigurasi yang benar
-try:
-    client = Groq(api_key=st.secrets.groq.api_key)
-except AttributeError:
-    st.error("Pastikan secrets.toml memiliki [groq] api_key atau konfigurasi di Streamlit Cloud!")
-    st.stop()
+os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
 
 # Load model IndoBERT dengan error handling
 try:
