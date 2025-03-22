@@ -109,7 +109,7 @@ def classify_text(text):
     response = client.chat.completions.create(
         model="llama-3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=10
+        max_tokens=1024
     )
     
     return response.choices[0].message.content.strip().split(':')[-1].strip()
