@@ -138,7 +138,7 @@ def classify_text(text):
     
     try:
         response = client.chat.completions.create(
-            model="llama3-70b-versatile",  # Perbaiki nama model
+            model="gemma2-9b-it",  
             messages=[{"role": "user", "content": prompt}],
             max_tokens=50
         )
