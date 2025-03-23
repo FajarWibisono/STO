@@ -104,7 +104,7 @@ def classify_text(text):
     for attempt in range(3):
         try:
             response = client.chat.completions.create(
-                model="llama3-70b-versatile",
+                model="gemma2-9b-it",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=50,
                 timeout=30
