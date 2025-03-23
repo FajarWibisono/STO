@@ -4,7 +4,7 @@ numpy
 groq==0.9.0
 httpx==0.27.2
 transformers
-torch
+torch==2.1.0
 scikit-learn
 python-docx
 openpyxl
