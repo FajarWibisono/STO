@@ -18,8 +18,8 @@ except Exception as e:
 
 # Load model IndoBERT
 try:
-    tokenizer = AutoTokenizer.from_pretrained("indolem/indobert-base-uncased", force_download=True)
-    model = AutoModel.from_pretrained("indolem/indobert-base-uncased", force_download=True)
+    tokenizer = AutoTokenizer.from_pretrained("LazarusNLP/all-indo-e5-small-v4", force_download=True)
+    model = AutoModel.from_pretrained("LazarusNLP/all-indo-e5-small-v4", force_download=True)
 except Exception as e:
     st.error(f"Gagal memuat model: {str(e)}")
     st.stop()
@@ -140,7 +140,7 @@ def classify_text(text):
         response = client.chat.completions.create(
             model="gemma2-9b-it",  
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=50
+            max_tokens=512
         )
         result = response.choices[0].message.content.strip().split(':')[-1].strip()
         return result
