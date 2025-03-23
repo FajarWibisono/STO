@@ -16,16 +16,10 @@ except Exception as e:
     st.error(f"Gagal menginisialisasi Groq client: {str(e)}")
     st.stop()
 
-# Load model IndoBERT dengan error handling
+# Load model IndoBERT
 try:
-    tokenizer = AutoTokenizer.from_pretrained(
-        "indolem/indobert-base-uncased",
-        force_download=True
-    )
-    model = AutoModel.from_pretrained(
-        "indolem/indobert-base-uncased",
-        force_download=True
-    )
+    tokenizer = AutoTokenizer.from_pretrained("indolem/indobert-base-uncased", force_download=True)
+    model = AutoModel.from_pretrained("indolem/indobert-base-uncased", force_download=True)
 except Exception as e:
     st.error(f"Gagal memuat model: {str(e)}")
     st.stop()
@@ -34,20 +28,25 @@ except Exception as e:
 context_documents = []
 
 def generate_embeddings(texts):
+    # Pastikan semua elemen adalah string dan tidak kosong
+    cleaned_texts = [str(text) for text in texts if pd.notna(text) and text != ""]
+    if not cleaned_texts:
+        raise ValueError("Tidak ada teks valid untuk diproses")
+    
     inputs = tokenizer(
-        texts,
+        cleaned_texts,
         return_tensors='pt',
         padding=True,
         truncation=True,
         max_length=512
     )
-    with torch.no_grad():  # Optimasi penggunaan memori
+    with torch.no_grad():
         outputs = model(**inputs)
     return outputs.last_hidden_state.mean(dim=1).detach().numpy()
 
 def load_context_documents():
     global context_documents
-    context_documents.clear()  # Reset sebelum load ulang
+    context_documents.clear()
     context_dir = 'documents'
     if not os.path.exists(context_dir):
         os.makedirs(context_dir)
@@ -57,11 +56,12 @@ def load_context_documents():
         try:
             if filename.endswith('.xlsx'):
                 df = pd.read_excel(file_path)
-                texts = df.iloc[:, 0].tolist()
+                # Konversi kolom pertama ke string dan tangani NaN
+                texts = df.iloc[:, 0].fillna("").astype(str).tolist()
                 labels = df.iloc[:, 1].tolist() if df.shape[1] > 1 else [None]*len(texts)
             elif filename.endswith('.csv'):
                 df = pd.read_csv(file_path)
-                texts = df.iloc[:, 0].tolist()
+                texts = df.iloc[:, 0].fillna("").astype(str).tolist()
                 labels = df.iloc[:, 1].tolist() if df.shape[1] > 1 else [None]*len(texts)
             elif filename.endswith('.docx'):
                 doc = docx.Document(file_path)
@@ -81,6 +81,8 @@ def load_context_documents():
             st.warning(f"Gagal memuat file {filename}: {str(e)}")
 
 load_context_documents()
+
+# (Sisa kode tetap sama, seperti find_similar_contexts, UI Streamlit, dll.)
 
 def find_similar_contexts(input_text, top_n=3):
     input_embedding = generate_embeddings([input_text])
