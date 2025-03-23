@@ -7,16 +7,10 @@ from groq import Groq, APIError
 from transformers import AutoTokenizer, AutoModel
 import torch
 from sklearn.metrics.pairwise import cosine_similarity
-import asyncio
 
 # Konfigurasi logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Pastikan event loop tersedia
-if not asyncio.get_event_loop().is_running():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
 
 # Inisialisasi Groq client
 try:
@@ -35,8 +29,8 @@ def load_model():
     if tokenizer is None or model is None:
         try:
             logger.info("Memuat model IndoBERT...")
-            tokenizer = AutoTokenizer.from_pretrained("LazarusNLP/all-indo-e5-small-v4")
-            model = AutoModel.from_pretrained("LazarusNLP/all-indo-e5-small-v4")
+            tokenizer = AutoTokenizer.from_pretrained("indolem/indobert-base-uncased")
+            model = AutoModel.from_pretrained("indolem/indobert-base-uncased")
             logger.info("Model IndoBERT berhasil dimuat")
         except Exception as e:
             st.error(f"Gagal memuat model: {str(e)}")
@@ -110,7 +104,7 @@ def classify_text(text):
     for attempt in range(3):
         try:
             response = client.chat.completions.create(
-                model="gemma2-9b-it",
+                model="llama3-70b-versatile",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=50,
                 timeout=30
@@ -119,7 +113,8 @@ def classify_text(text):
         except APIError as e:
             logger.error(f"Percobaan {attempt + 1} gagal: {str(e)}")
             if attempt < 2:
-                asyncio.sleep(2)  # Ganti time.sleep dengan asyncio.sleep
+                import time
+                time.sleep(2)  # Gunakan time.sleep karena asyncio.sleep memerlukan event loop
             else:
                 return f"Error: Gagal mengakses API Groq setelah 3 percobaan"
 
@@ -127,6 +122,7 @@ def classify_text(text):
 st.title("Classifier Program")
 st.write("Klasifikasi Program Budaya/Kegiatan/Deliverables")
 
+# Hindari pemrosesan berat di startup
 if st.sidebar.button("Muat Ulang Context Documents"):
     with st.spinner("Memuat dokumen context..."):
         load_context_documents()
@@ -140,3 +136,14 @@ if st.button("Klasifikasi"):
             st.info(f"Hasil: {result}")
     else:
         st.warning("Masukkan teks terlebih dahulu!")
+
+# Workaround untuk konflik torch.classes
+try:
+    import torch._classes
+    def safe_getattr(self, name):
+        if name == "__path__":
+            return None  # Kembalikan None untuk menghindari error
+        return torch._C._get_custom_class_python_wrapper(self.name, name)
+    torch._classes.__getattr__ = safe_getattr
+except ImportError:
+    pass
