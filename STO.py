@@ -8,196 +8,206 @@ import torch
 from sklearn.metrics.pairwise import cosine_similarity
 from io import BytesIO
 import docx
+from pathlib import Path
+import logging
 
-# Inisialisasi Groq client
-try:
-    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-except Exception as e:
-    st.error(f"Gagal menginisialisasi Groq client: {str(e)}")
-    st.stop()
+# Konfigurasi logging
+logging.basicConfig(level=logging.INFO)
 
-# Load model IndoBERT
-try:
-    tokenizer = AutoTokenizer.from_pretrained("indolem/indobert-base-uncased", force_download=True)
-    model = AutoModel.from_pretrained("indolem/indobert-base-uncased", force_download=True)
-except Exception as e:
-    st.error(f"Gagal memuat model: {str(e)}")
-    st.stop()
+# Inisialisasi session state
+if 'context_documents' not in st.session_state:
+    st.session_state.context_documents = []
 
-# Context documents storage
-context_documents = []
+# Konfigurasi direktori
+DATA_DIR = Path('documents')
+DATA_DIR.mkdir(exist_ok=True)
 
+# Inisialisasi model dan tokenizer
+@st.cache_resource(show_spinner="Memuat model IndoBERT...")
+def load_model():
+    try:
+        tokenizer = AutoTokenizer.from_pretrained("indolem/indobert-base-uncased")
+        model = AutoModel.from_pretrained("indolem/indobert-base-uncased")
+        return tokenizer, model
+    except Exception as e:
+        st.error(f"Gagal memuat model: {str(e)}")
+        st.stop()
+
+tokenizer, model = load_model()
+
+# Fungsi pembuatan embeddings
 def generate_embeddings(texts):
-    # Pastikan semua elemen adalah string dan tidak kosong
-    cleaned_texts = [str(text) for text in texts if pd.notna(text) and text != ""]
-    if not cleaned_texts:
-        raise ValueError("Tidak ada teks valid untuk diproses")
-    
-    inputs = tokenizer(
-        cleaned_texts,
-        return_tensors='pt',
-        padding=True,
-        truncation=True,
-        max_length=512
-    )
-    with torch.no_grad():
-        outputs = model(**inputs)
-    return outputs.last_hidden_state.mean(dim=1).detach().numpy()
+    try:
+        inputs = tokenizer(
+            texts,
+            return_tensors='pt',
+            padding=True,
+            truncation=True,
+            max_length=512
+        )
+        with torch.no_grad():
+            outputs = model(**inputs)
+        return outputs.last_hidden_state.mean(dim=1).numpy()
+    except Exception as e:
+        logging.error(f"Error generate embeddings: {str(e)}")
+        return None
 
+# Fungsi pemuatan dokumen konteks
 def load_context_documents():
-    global context_documents
-    context_documents.clear()
-    context_dir = 'documents'
-    if not os.path.exists(context_dir):
-        os.makedirs(context_dir)
-        
-    for filename in os.listdir(context_dir):
-        file_path = os.path.join(context_dir, filename)
+    documents = []
+    for file_path in DATA_DIR.glob('*'):
         try:
-            if filename.endswith('.xlsx'):
-                df = pd.read_excel(file_path)
-                # Konversi kolom pertama ke string dan tangani NaN
+            if file_path.suffix in ['.xlsx', '.csv']:
+                df = pd.read_excel(file_path) if file_path.suffix == '.xlsx' else pd.read_csv(file_path)
                 texts = df.iloc[:, 0].fillna("").astype(str).tolist()
                 labels = df.iloc[:, 1].tolist() if df.shape[1] > 1 else [None]*len(texts)
-            elif filename.endswith('.csv'):
-                df = pd.read_csv(file_path)
-                texts = df.iloc[:, 0].fillna("").astype(str).tolist()
-                labels = df.iloc[:, 1].tolist() if df.shape[1] > 1 else [None]*len(texts)
-            elif filename.endswith('.docx'):
+            elif file_path.suffix == '.docx':
                 doc = docx.Document(file_path)
-                texts = [para.text for para in doc.paragraphs if para.text.strip()]
+                texts = [para.text.strip() for para in doc.paragraphs if para.text.strip()]
                 labels = [None]*len(texts)
             else:
                 continue
-                
+
             embeddings = generate_embeddings(texts)
-            for text, label, embedding in zip(texts, labels, embeddings):
-                context_documents.append({
-                    'text': text,
-                    'label': label,
-                    'embedding': embedding
-                })
+            if embeddings is not None:
+                for text, label, emb in zip(texts, labels, embeddings):
+                    documents.append({
+                        'text': text,
+                        'label': label,
+                        'embedding': emb
+                    })
         except Exception as e:
-            st.warning(f"Gagal memuat file {filename}: {str(e)}")
+            logging.warning(f"Gagal memproses {file_path}: {str(e)}")
+    return documents
 
-load_context_documents()
+# Pembaruan konteks saat startup
+st.session_state.context_documents = load_context_documents()
 
-# (Sisa kode tetap sama, seperti find_similar_contexts, UI Streamlit, dll.)
-
+# Fungsi pencarian konteks mirip
 def find_similar_contexts(input_text, top_n=3):
-    input_embedding = generate_embeddings([input_text])
+    input_emb = generate_embeddings([input_text])
+    if input_emb is None:
+        return []
+    
     similarities = []
-    for doc in context_documents:
-        sim = cosine_similarity(input_embedding, [doc['embedding']])[0][0]
+    for doc in st.session_state.context_documents:
+        sim = cosine_similarity(input_emb, [doc['embedding']])[0][0]
         similarities.append((doc, sim))
+    
     similarities.sort(key=lambda x: x[1], reverse=True)
     return [doc for doc, _ in similarities[:top_n]]
 
-# Streamlit UI
-st.title('Classifier Program Budaya/Kegiatan/Deliverables')
-st.write('Klasifikasi Program Budaya/Kegiatan/Deliverables menjadi STRATEGIS, TAKTIKAL, atau OPERASIONAL')
-
-# Sidebar untuk upload data context
-st.sidebar.header('Upload Data Context')
-context_file = st.sidebar.file_uploader(
-    "Upload file Excel/CSV/DOCX untuk context",
-    type=['xlsx', 'csv', 'docx']
-)
-
-if context_file is not None:
-    try:
-        save_path = os.path.join('documents', context_file.name)
-        with open(save_path, 'wb') as f:
-            f.write(context_file.getvalue())
-        st.sidebar.success("File context berhasil disimpan!")
-        load_context_documents()  # Reload context
-    except Exception as e:
-        st.sidebar.error(f"Error menyimpan file: {str(e)}")
-
-# Main classification area
-st.header('Klasifikasi Data Baru')
-tab1, tab2 = st.tabs(["Upload File", "Input Manual"])
-
+# Fungsi klasifikasi
 def classify_text(text):
-    similar_contexts = find_similar_contexts(text)
-    context_str = "\n".join(
-        [f"Contoh: \"{doc['text']}\" -> {doc['label']}" 
-         for doc in similar_contexts if doc['label']]
-    )
-    
-    prompt = f"""
-    Klasifikasikan teks berikut menjadi STRATEGIS, TAKTIKAL, atau OPERASIONAL:
-    {context_str}
-    
-    Teks yang perlu diklasifikasi:
-    "{text}"
-    
-    Jawaban harus dalam format:
-    KATEGORI: [STRATEGIS/TAKTIKAL/OPERASIONAL]
-    """
-    
     try:
+        similar_contexts = find_similar_contexts(text)
+        context_examples = "\n".join(
+            [f"- {doc['text']} → {doc['label']}" 
+             for doc in similar_contexts if doc['label']]
+        ) or "Tidak ada contoh konteks yang tersedia"
+        
+        prompt = f"""
+        Klasifikasikan teks berikut menjadi STRATEGIS, TAKTIKAL, atau OPERASIONAL:
+        Contoh Konteks:
+        {context_examples}
+        
+        Teks Target:
+        "{text}"
+        
+        Format jawaban: KATEGORI: [STRATEGIS/TAKTIKAL/OPERASIONAL]
+        """
+        
         response = client.chat.completions.create(
-            model="gemma2-9b-it",  # Perbaiki nama model
+            model="gemma2-9b-it",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=50
         )
-        result = response.choices[0].message.content.strip().split(':')[-1].strip()
-        return result
+        return response.choices[0].message.content.split(':')[-1].strip()
+    
     except Exception as e:
-        return f"Error: {str(e)}"
+        logging.error(f"Error klasifikasi: {str(e)}")
+        return "ERROR"
+
+# Konfigurasi Groq client
+try:
+    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+except Exception as e:
+    st.error(f"Kesalahan konfigurasi API: {str(e)}")
+    st.stop()
+
+# ======== Tampilan Streamlit ========
+st.title('Klasifikasi Program Budaya/Kegiatan/Deliverables')
+st.write('Klasifikasi ke STRATEGIS, TAKTIKAL, atau OPERASIONAL')
+
+# Sidebar untuk upload konteks
+with st.sidebar:
+    st.header('Pengaturan Konteks')
+    context_file = st.file_uploader(
+        "Upload konteks (Excel/CSV/DOCX)",
+        type=['xlsx', 'csv', 'docx'],
+        key='context_uploader'
+    )
+    
+    if context_file:
+        try:
+            file_path = DATA_DIR / context_file.name
+            with open(file_path, 'wb') as f:
+                f.write(context_file.getvalue())
+            st.success("Konteks berhasil diperbarui!")
+            st.session_state.context_documents = load_context_documents()
+        except Exception as e:
+            st.error(f"Gagal menyimpan konteks: {str(e)}")
+
+# Tab utama
+tab1, tab2 = st.tabs(["Upload File", "Input Manual"])
 
 with tab1:
     pred_file = st.file_uploader(
         "Upload file Excel untuk klasifikasi",
-        type=['xlsx']
+        type=['xlsx'],
+        key='pred_uploader'
     )
     
-    if pred_file is not None:
+    if pred_file:
         try:
             pred_df = pd.read_excel(pred_file)
-            st.success("File berhasil diupload!")
-            pred_column = st.selectbox(
-                'Pilih kolom teks yang akan diklasifikasi:',
-                pred_df.columns
-            )
+            column_options = pred_df.select_dtypes(include=['object']).columns.tolist()
+            pred_column = st.selectbox('Pilih kolom teks:', column_options)
             
-            if st.button('Klasifikasi File'):
-                with st.spinner('Mengklasifikasi data...'):
-                    results = [classify_text(text) for text in pred_df[pred_column]]
+            if st.button('Mulai Klasifikasi'):
+                with st.spinner('Memproses klasifikasi...'):
+                    results = []
+                    for text in pred_df[pred_column].fillna("").astype(str):
+                        results.append(classify_text(text))
+                    
                     pred_df['Hasil_Klasifikasi'] = results
-                    st.write('Hasil Klasifikasi:')
                     st.dataframe(pred_df)
                     
                     buffer = BytesIO()
-                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                    with pd.ExcelWriter(buffer) as writer:
                         pred_df.to_excel(writer, index=False)
                     st.download_button(
-                        label="Download hasil klasifikasi (Excel)",
+                        label="Download Hasil",
                         data=buffer.getvalue(),
                         file_name="hasil_klasifikasi.xlsx",
                         mime="application/vnd.ms-excel"
                     )
         except Exception as e:
-            st.error(f"Error memproses file: {str(e)}")
+            st.error(f"Error pemrosesan file: {str(e)}")
 
 with tab2:
-    input_text = st.text_area(
-        "Tuliskan Program Budaya/Kegiatan/Deliverables Anda di bawah ini:"
-    )
-    
-    if st.button('Klasifikasi Teks'):
-        if not input_text:
-            st.warning("Mohon masukkan teks terlebih dahulu!")
+    input_text = st.text_area("Masukkan teks untuk klasifikasi:")
+    if st.button('Klasifikasi'):
+        if not input_text.strip():
+            st.warning("Teks tidak boleh kosong!")
         else:
-            with st.spinner('Mengklasifikasi teks...'):
+            with st.spinner('Memproses...'):
                 result = classify_text(input_text)
-                st.write('Hasil Klasifikasi:')
-                st.info(f"Teks termasuk kategori: {result}")
+                st.success(f"Hasil: {result}")
 
 st.markdown("""
-### Petunjuk Penggunaan:
-1. Pastikan sudah mengunggah file context di sidebar
-2. Untuk input file Excel, pastikan format kolom sesuai
-3. Hasil klasifikasi bisa didownload dalam format Excel
+### Catatan Penggunaan:
+1. Pastikan konteks sudah diupload di sidebar
+2. Format file Excel harus memiliki kolom teks dan label
+3. Hasil klasifikasi otomatis disimpan dalam format Excel
 """)
