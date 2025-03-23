@@ -14,11 +14,7 @@ import logging
 # Konfigurasi logging
 logging.basicConfig(level=logging.INFO)
 
-# Inisialisasi session state
-if 'context_documents' not in st.session_state:
-    st.session_state.context_documents = []
-
-# Konfigurasi direktori
+# Inisialisasi direktori
 DATA_DIR = Path('documents')
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -35,11 +31,26 @@ def load_model():
 
 tokenizer, model = load_model()
 
+# Konfigurasi Groq client
+try:
+    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+except Exception as e:
+    st.error(f"Kesalahan konfigurasi API: {str(e)}")
+    st.stop()
+
+# Session state untuk konteks
+if 'context_documents' not in st.session_state:
+    st.session_state.context_documents = []
+
 # Fungsi pembuatan embeddings
 def generate_embeddings(texts):
     try:
+        cleaned_texts = [str(text).strip() for text in texts if pd.notna(text) and text != ""]
+        if not cleaned_texts:
+            return None
+        
         inputs = tokenizer(
-            texts,
+            cleaned_texts,
             return_tensors='pt',
             padding=True,
             truncation=True,
@@ -73,67 +84,76 @@ def load_context_documents():
                 for text, label, emb in zip(texts, labels, embeddings):
                     documents.append({
                         'text': text,
-                        'label': label,
+                        'label': label.upper() if label else None,
                         'embedding': emb
                     })
         except Exception as e:
             logging.warning(f"Gagal memproses {file_path}: {str(e)}")
     return documents
 
-# Pembaruan konteks saat startup
+# Pembaruan konteks
 st.session_state.context_documents = load_context_documents()
 
-# Fungsi pencarian konteks mirip
-def find_similar_contexts(input_text, top_n=3):
+# Fungsi pencarian konteks mirip dengan threshold
+def find_similar_contexts(input_text, top_n=3, threshold=0.65):
     input_emb = generate_embeddings([input_text])
     if input_emb is None:
         return []
     
     similarities = []
     for doc in st.session_state.context_documents:
+        if doc['label'] is None:
+            continue
         sim = cosine_similarity(input_emb, [doc['embedding']])[0][0]
-        similarities.append((doc, sim))
+        if sim >= threshold:
+            similarities.append((doc, sim))
     
     similarities.sort(key=lambda x: x[1], reverse=True)
     return [doc for doc, _ in similarities[:top_n]]
 
-# Fungsi klasifikasi
+# Validasi kategori
+ALLOWED_CATEGORIES = {"STRATEGIS", "TAKTIKAL", "OPERASIONAL"}
+
+def validate_category(category):
+    upper_cat = category.upper()
+    return upper_cat if upper_cat in ALLOWED_CATEGORIES else "TIDAK JELAS"
+
+# Fungsi klasifikasi dengan prompt yang diperbaiki
 def classify_text(text):
     try:
         similar_contexts = find_similar_contexts(text)
         context_examples = "\n".join(
-            [f"- {doc['text']} → {doc['label']}" 
-             for doc in similar_contexts if doc['label']]
-        ) or "Tidak ada contoh konteks yang tersedia"
-        
+            [f"Contoh {i+1}: \"{doc['text']}\" → {doc['label']}" 
+             for i, doc in enumerate(similar_contexts) if doc['label']]
+        ) or "Tidak ada contoh yang relevan"
+
         prompt = f"""
-        Klasifikasikan teks berikut menjadi STRATEGIS, TAKTIKAL, atau OPERASIONAL:
-        Contoh Konteks:
+        KLASIFIKASI PROGRAM BUDAYA/KEGIATAN
+        INSTRUKSI:
+        1. Gunakan CONTOH KONTEKS berikut sebagai referensi
+        2. Klasifikasikan ke dalam: STRATEGIS, TAKTIKAL, atau OPERASIONAL
+        3. Jawaban harus dalam format: KATEGORI: [STRATEGIS/TAKTIKAL/OPERASIONAL]
+
+        CONTOH KONTEKS:
         {context_examples}
-        
-        Teks Target:
+
+        TEKS TARGET:
         "{text}"
-        
-        Format jawaban: KATEGORI: [STRATEGIS/TAKTIKAL/OPERASIONAL]
         """
         
         response = client.chat.completions.create(
             model="gemma2-9b-it",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=50
+            max_tokens=50,
+            temperature=0.1
         )
-        return response.choices[0].message.content.split(':')[-1].strip()
+        result = response.choices[0].message.content.strip()
+        category = result.split(':')[-1].strip() if 'KATEGORI:' in result else "TIDAK JELAS"
+        return validate_category(category)
     
     except Exception as e:
         logging.error(f"Error klasifikasi: {str(e)}")
         return "ERROR"
-
-# Konfigurasi Groq client
-try:
-    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-except Exception as e:
-    st.error(f"Kesalahan konfigurasi API: {str(e)}")
-    st.stop()
 
 # ======== Tampilan Streamlit ========
 st.title('Klasifikasi Program Budaya/Kegiatan/Deliverables')
@@ -202,12 +222,21 @@ with tab2:
             st.warning("Teks tidak boleh kosong!")
         else:
             with st.spinner('Memproses...'):
+                # Tampilkan contoh yang digunakan
+                similar_contexts = find_similar_contexts(input_text)
+                st.write("Contoh Referensi yang Digunakan:")
+                st.table(pd.DataFrame([{
+                    'Teks': doc['text'],
+                    'Kategori': doc['label']
+                } for doc in similar_contexts]))
+                
                 result = classify_text(input_text)
-                st.success(f"Hasil: {result}")
+                st.write('Hasil Klasifikasi:')
+                st.info(f"Kategori: {result}")
 
 st.markdown("""
-### Catatan Penggunaan:
-1. Pastikan konteks sudah diupload di sidebar
-2. Format file Excel harus memiliki kolom teks dan label
-3. Hasil klasifikasi otomatis disimpan dalam format Excel
+### Catatan Penting:
+1. Pastikan konteks memiliki minimal 10 contoh untuk setiap kategori
+2. Format file Excel konteks harus: Kolom 1 = Teks, Kolom 2 = Kategori
+3. Contoh kategori yang valid: STRATEGIS, TAKTIKAL, OPERASIONAL
 """)
