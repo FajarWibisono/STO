@@ -9,8 +9,12 @@ from sklearn.metrics.pairwise import cosine_similarity
 from io import BytesIO
 import docx
 
-# Inisialisasi Groq client dengan konfigurasi yang benar
-os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
+# Inisialisasi Groq client
+try:
+    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+except Exception as e:
+    st.error(f"Gagal menginisialisasi Groq client: {str(e)}")
+    st.stop()
 
 # Load model IndoBERT dengan error handling
 try:
@@ -30,7 +34,6 @@ except Exception as e:
 context_documents = []
 
 def generate_embeddings(texts):
-    # Tambahkan parameter max_length dan truncation
     inputs = tokenizer(
         texts,
         return_tensors='pt',
@@ -38,39 +41,44 @@ def generate_embeddings(texts):
         truncation=True,
         max_length=512
     )
-    outputs = model(**inputs)
+    with torch.no_grad():  # Optimasi penggunaan memori
+        outputs = model(**inputs)
     return outputs.last_hidden_state.mean(dim=1).detach().numpy()
 
 def load_context_documents():
     global context_documents
+    context_documents.clear()  # Reset sebelum load ulang
     context_dir = 'documents'
     if not os.path.exists(context_dir):
         os.makedirs(context_dir)
         
     for filename in os.listdir(context_dir):
         file_path = os.path.join(context_dir, filename)
-        if filename.endswith('.xlsx'):
-            df = pd.read_excel(file_path)
-            texts = df.iloc[:, 0].tolist()
-            labels = df.iloc[:, 1].tolist() if df.shape[1] > 1 else [None]*len(texts)
-        elif filename.endswith('.csv'):
-            df = pd.read_csv(file_path)
-            texts = df.iloc[:, 0].tolist()
-            labels = df.iloc[:, 1].tolist() if df.shape[1] > 1 else [None]*len(texts)
-        elif filename.endswith('.docx'):
-            doc = docx.Document(file_path)
-            texts = [para.text for para in doc.paragraphs]
-            labels = [None]*len(texts)
-        else:
-            continue
-            
-        embeddings = generate_embeddings(texts)
-        for text, label, embedding in zip(texts, labels, embeddings):
-            context_documents.append({
-                'text': text,
-                'label': label,
-                'embedding': embedding
-            })
+        try:
+            if filename.endswith('.xlsx'):
+                df = pd.read_excel(file_path)
+                texts = df.iloc[:, 0].tolist()
+                labels = df.iloc[:, 1].tolist() if df.shape[1] > 1 else [None]*len(texts)
+            elif filename.endswith('.csv'):
+                df = pd.read_csv(file_path)
+                texts = df.iloc[:, 0].tolist()
+                labels = df.iloc[:, 1].tolist() if df.shape[1] > 1 else [None]*len(texts)
+            elif filename.endswith('.docx'):
+                doc = docx.Document(file_path)
+                texts = [para.text for para in doc.paragraphs if para.text.strip()]
+                labels = [None]*len(texts)
+            else:
+                continue
+                
+            embeddings = generate_embeddings(texts)
+            for text, label, embedding in zip(texts, labels, embeddings):
+                context_documents.append({
+                    'text': text,
+                    'label': label,
+                    'embedding': embedding
+                })
+        except Exception as e:
+            st.warning(f"Gagal memuat file {filename}: {str(e)}")
 
 load_context_documents()
 
@@ -102,11 +110,10 @@ if context_file is not None:
         st.sidebar.success("File context berhasil disimpan!")
         load_context_documents()  # Reload context
     except Exception as e:
-        st.sidebar.error(f"Error: {str(e)}")
+        st.sidebar.error(f"Error menyimpan file: {str(e)}")
 
 # Main classification area
 st.header('Klasifikasi Data Baru')
-
 tab1, tab2 = st.tabs(["Upload File", "Input Manual"])
 
 def classify_text(text):
@@ -121,19 +128,22 @@ def classify_text(text):
     {context_str}
     
     Teks yang perlu diklasifikasi:
-    {text}
+    "{text}"
     
     Jawaban harus dalam format:
     KATEGORI: [STRATEGIS/TAKTIKAL/OPERASIONAL]
     """
     
-    response = client.chat.completions.create(
-        model="llama-3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=10
-    )
-    
-    return response.choices[0].message.content.strip().split(':')[-1].strip()
+    try:
+        response = client.chat.completions.create(
+            model="llama3-70b-versatile",  # Perbaiki nama model
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=50
+        )
+        result = response.choices[0].message.content.strip().split(':')[-1].strip()
+        return result
+    except Exception as e:
+        return f"Error: {str(e)}"
 
 with tab1:
     pred_file = st.file_uploader(
@@ -152,10 +162,7 @@ with tab1:
             
             if st.button('Klasifikasi File'):
                 with st.spinner('Mengklasifikasi data...'):
-                    results = []
-                    for text in pred_df[pred_column]:
-                        results.append(classify_text(text))
-                    
+                    results = [classify_text(text) for text in pred_df[pred_column]]
                     pred_df['Hasil_Klasifikasi'] = results
                     st.write('Hasil Klasifikasi:')
                     st.dataframe(pred_df)
@@ -170,7 +177,7 @@ with tab1:
                         mime="application/vnd.ms-excel"
                     )
         except Exception as e:
-            st.error(f"Error: {str(e)}")
+            st.error(f"Error memproses file: {str(e)}")
 
 with tab2:
     input_text = st.text_area(
